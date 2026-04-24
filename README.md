@@ -1,0 +1,85 @@
+# go-server-timing
+
+A stdlib-only Go package for the W3C [Server-Timing](https://w3c.github.io/server-timing/) HTTP response header.
+
+- Parse incoming `Server-Timing` headers (multi-value, quoted, escaped).
+- Build and serialize metrics with a fluent API.
+- Propagate a collector through `context.Context`.
+- `http.Handler` middleware that emits the header before the first response byte.
+
+No dependencies outside the Go standard library.
+
+## Install
+
+```sh
+go get github.com/dennis-tra/go-server-timing
+```
+
+Requires Go 1.26.
+
+## Quickstart
+
+### Middleware
+
+```go
+mux := http.NewServeMux()
+mux.HandleFunc("/users", func(w http.ResponseWriter, r *http.Request) {
+    h := servertiming.FromContext(r.Context())
+    defer h.NewMetric("db").WithDesc("select users").Start().Stop()
+    // ... handle request ...
+    w.Write([]byte("ok"))
+})
+
+http.ListenAndServe(":8080", servertiming.Middleware(mux))
+```
+
+The response will include:
+
+```
+Server-Timing: db;dur=12.3;desc="select users"
+```
+
+### Parsing
+
+```go
+h, err := servertiming.ParseHeader(resp.Header.Get("Server-Timing"))
+for _, m := range h.Metrics() {
+    log.Printf("%s took %v (%s)", m.Name, m.Duration, m.Description)
+}
+```
+
+Parsing is tolerant: malformed metrics are skipped, and per-metric/per-param errors are joined via `errors.Join` into the returned error. Successfully parsed metrics are always returned on the `*Header`.
+
+For multi-value headers (e.g. from `http.Header.Values`):
+
+```go
+h, err := servertiming.ParseHeaders(resp.Header.Values("Server-Timing"))
+```
+
+### Constructing metrics
+
+```go
+m := servertiming.NewMetric("db").
+    WithDuration(50 * time.Millisecond).
+    WithDesc("primary query")
+w.Header().Set(servertiming.HeaderName, m.String())
+```
+
+## Behavior notes
+
+- **Duplicate params on a single metric**: last value wins.
+- **Invalid `dur` values** (not parseable as a float) are preserved under `Metric.Extra["dur"]` so the original content survives a round-trip, and a soft error is reported.
+- **Case-insensitive param names**: `DUR`, `Dur`, and `dur` are equivalent on parse; serialized output always uses lowercase.
+- **Quoted values** are unescaped on parse and re-quoted on serialize when they contain non-token characters. The values `"` and `\` are escaped with a leading backslash.
+- **Extra param ordering** in `Metric.String()` is stable but not part of the public contract.
+- **Nil-safe context access**: `FromContext` returns `nil` when no collector is installed; all `*Header` methods handle a nil receiver as a no-op so handler code can chain without nil-checks.
+- **ResponseWriter capability preservation**: the middleware wraps the inner writer with a type that implements exactly the subset of `http.Flusher`, `http.Hijacker`, `http.Pusher`, and `io.ReaderFrom` that the inner supports. Type assertions against the wrapped writer produce the same answers as against the inner.
+
+## Limitations
+
+- The package targets the server-side header. Browser-side integration with the Server-Timing API via `PerformanceServerTiming` is out of scope.
+- Client-side integration with `net/http/httptrace` is not provided. Call `ParseHeader` on `resp.Header` directly if you need to read timings returned by upstream services.
+
+## License
+
+Pick one before release. No `LICENSE` file is included in this repository yet.
