@@ -53,3 +53,57 @@ func ExampleHeader_startStop() {
 	fmt.Println(len(h.Metrics()))
 	// Output: 1
 }
+
+func ExampleParseHeaders() {
+	// Parse multiple Server-Timing header values (common with proxies/middleware chains)
+	values := []string{
+		"db;dur=53;desc=\"Query\"",
+		"cache;dur=12",
+		"render;dur=89;desc=\"Template\"",
+	}
+	h, err := servertiming.ParseHeaders(values)
+	if err != nil {
+		fmt.Println("parse errors:", err)
+	}
+	for _, m := range h.Metrics() {
+		fmt.Printf("%s: %v\n", m.Name, m.Duration)
+	}
+	// Output:
+	// db: 53ms
+	// cache: 12ms
+	// render: 89ms
+}
+
+func ExampleMetric_WithParam() {
+	// Add arbitrary key-value parameters to a metric
+	m := servertiming.NewMetric("db").
+		WithDuration(42*time.Millisecond).
+		WithDesc("user lookup").
+		WithParam("server", "primary-us-west").
+		WithParam("version", "2")
+	fmt.Println(m.String())
+	// Output: db;dur=42;desc="user lookup";server=primary-us-west;version=2
+}
+
+func ExampleHeader_WriteTo() {
+	// Manually construct and write metrics without middleware
+	w := httptest.NewRecorder()
+	h := servertiming.NewHeader()
+	h.NewMetric("setup").WithDuration(10 * time.Millisecond)
+	h.NewMetric("work").WithDuration(50 * time.Millisecond).WithDesc("main task")
+	h.NewMetric("cleanup").WithDuration(5 * time.Millisecond)
+
+	h.WriteTo(w.Header())
+	fmt.Println(w.Header().Get(servertiming.HeaderName))
+	// Output: setup;dur=10, work;dur=50;desc="main task", cleanup;dur=5
+}
+
+func ExampleMetric_String() {
+	// Serialize a metric to its Server-Timing header representation
+	m := servertiming.NewMetric("lookup").
+		WithDuration(35*time.Millisecond).
+		WithDesc("cache lookup").
+		WithParam("cache", "redis")
+	fmt.Println(m.String())
+	// Output: lookup;dur=35;desc="cache lookup";cache=redis
+}
