@@ -27,9 +27,3 @@ func Middleware(next http.Handler) http.Handler {
 		base.ensureHeader()
 	})
 }
-
-// MiddlewareFunc is a convenience wrapper around [Middleware] for
-// bare [http.HandlerFunc] values.
-func MiddlewareFunc(next http.HandlerFunc) http.Handler {
-	return Middleware(next)
-}

@@ -206,30 +206,26 @@ func TestMiddleware_ConcurrentAddsFromGoroutines(t *testing.T) {
 }
 
 func TestMiddleware_UnwrapWorks(t *testing.T) {
+	rec := httptest.NewRecorder()
 	var inner http.ResponseWriter
 	handler := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if u, ok := w.(interface{ Unwrap() http.ResponseWriter }); ok {
-			inner = u.Unwrap()
+		u, ok := w.(interface{ Unwrap() http.ResponseWriter })
+		if !ok {
+			t.Error("wrapped writer does not expose Unwrap()")
+			return
 		}
+		inner = u.Unwrap()
 		w.Write([]byte("ok"))
 	}))
-
-	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if inner == nil {
-		t.Fatal("wrapped writer does not expose Unwrap()")
+		t.Fatal("Unwrap returned nil")
 	}
-	if inner == httpResponseWriter(rec) {
-		// ResponseRecorder is passed directly by ServeHTTP; Unwrap
-		// should return it.
-		return
+	if inner != http.ResponseWriter(rec) {
+		t.Errorf("Unwrap returned %T, want the original *httptest.ResponseRecorder", inner)
 	}
 }
-
-// httpResponseWriter narrows a concrete value to the interface for
-// pointer-equality comparison in a test.
-func httpResponseWriter(w http.ResponseWriter) http.ResponseWriter { return w }
 
 func TestMiddleware_ExplicitStatusCode(t *testing.T) {
 	handler := Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

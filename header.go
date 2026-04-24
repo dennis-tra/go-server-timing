@@ -14,6 +14,16 @@ const HeaderName = "Server-Timing"
 // nil *Header are no-ops, so handlers that retrieve the collector via
 // [FromContext] without one installed can call [Header.Add] without
 // nil-checking.
+//
+// Concurrency: [Header.Add] and [Header.NewMetric] are safe to call
+// from any goroutine. However, [Metric] values are not themselves
+// safe for concurrent mutation. If a handler fans out goroutines
+// that mutate a Metric (for example via [Metric.Stop]), it is the
+// caller's responsibility to ensure those mutations complete before
+// the response is written or [Header.String]/[Header.WriteTo] is
+// called. To reduce the race window, [Header.String] snapshots each
+// Metric's primitive fields under Header's mutex before
+// serialization.
 type Header struct {
 	mu      sync.Mutex
 	metrics []*Metric
@@ -60,28 +70,41 @@ func (h *Header) Metrics() []*Metric {
 
 // String serializes the collected metrics as a single Server-Timing
 // header value with entries joined by ", ". An empty or nil Header
-// returns "".
+// returns "". String snapshots each Metric under the Header mutex
+// before formatting, so concurrent mutation of Metric fields during
+// serialization cannot tear the slice; see the concurrency note on
+// [Header] for the contract on Metric-level mutations.
 func (h *Header) String() string {
 	if h == nil {
 		return ""
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if len(h.metrics) == 0 {
+		h.mu.Unlock()
 		return ""
 	}
-	var b strings.Builder
+	snap := make([]Metric, len(h.metrics))
 	for i, m := range h.metrics {
+		snap[i] = *m
+	}
+	h.mu.Unlock()
+
+	var b strings.Builder
+	for i := range snap {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString(m.String())
+		b.WriteString(snap[i].String())
 	}
 	return b.String()
 }
 
-// WriteTo sets the Server-Timing header on hdr if h contains any
-// metrics. A nil h, nil hdr, or empty collector is a no-op.
+// WriteTo appends the Server-Timing header value on hdr if h contains
+// any metrics. Existing Server-Timing values on hdr (e.g. set by an
+// upstream middleware or gateway) are preserved: the W3C spec
+// treats multiple Server-Timing fields as one comma-joined list, so
+// [http.Header.Add] is semantically correct here. A nil h, nil hdr,
+// or empty collector is a no-op.
 func (h *Header) WriteTo(hdr http.Header) {
 	if h == nil || hdr == nil {
 		return
@@ -90,5 +113,5 @@ func (h *Header) WriteTo(hdr http.Header) {
 	if value == "" {
 		return
 	}
-	hdr.Set(HeaderName, value)
+	hdr.Add(HeaderName, value)
 }

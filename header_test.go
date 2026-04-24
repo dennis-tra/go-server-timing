@@ -88,6 +88,29 @@ func TestHeader_WriteToEmpty(t *testing.T) {
 	}
 }
 
+func TestHeader_WriteToAppendsToExisting(t *testing.T) {
+	// If upstream middleware already set a Server-Timing value, our
+	// WriteTo must preserve it (the spec treats multiple fields as a
+	// single comma-joined list).
+	hdr := http.Header{}
+	hdr.Set(HeaderName, "upstream;dur=99")
+
+	h := NewHeader()
+	h.Add(NewMetric("local").WithDuration(5 * time.Millisecond))
+	h.WriteTo(hdr)
+
+	values := hdr.Values(HeaderName)
+	if len(values) != 2 {
+		t.Fatalf("hdr.Values = %v, want 2 entries", values)
+	}
+	if values[0] != "upstream;dur=99" {
+		t.Errorf("values[0] = %q, want upstream;dur=99", values[0])
+	}
+	if values[1] != "local;dur=5" {
+		t.Errorf("values[1] = %q, want local;dur=5", values[1])
+	}
+}
+
 func TestHeader_MetricsSnapshotIsolated(t *testing.T) {
 	h := NewHeader()
 	h.Add(NewMetric("db"))

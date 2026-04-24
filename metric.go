@@ -15,6 +15,13 @@ import (
 // serialized as "desc", quoted when it contains non-token characters.
 // Extra carries any additional params preserved by the parser, with
 // keys normalized to lowercase.
+//
+// Metric is not safe for concurrent mutation. After the metric has
+// been added to a [Header], any further mutation (including [Stop],
+// [WithDuration], [WithDesc], or [WithParam]) must be serialized
+// with any goroutine that may cause the Header to be serialized.
+// In typical middleware usage this means all mutations complete on
+// the handler goroutine before the response is written.
 type Metric struct {
 	Name        string
 	Duration    time.Duration
@@ -24,8 +31,16 @@ type Metric struct {
 	startTime time.Time
 }
 
-// NewMetric returns a Metric with only the Name set.
+// NewMetric returns a Metric with only the Name set. NewMetric
+// panics if name is not a valid HTTP token, matching the contract
+// of [regexp.MustCompile] and similar stdlib "must" constructors:
+// metric names are typically string literals, and silently producing
+// output that does not round-trip through [ParseHeader] is the
+// worse failure mode.
 func NewMetric(name string) *Metric {
+	if !isToken(name) {
+		panic("servertiming: metric name must be a valid HTTP token: " + name)
+	}
 	return &Metric{Name: name}
 }
 
@@ -45,11 +60,15 @@ func (m *Metric) WithDesc(desc string) *Metric {
 	return m
 }
 
-// WithParam sets an arbitrary param. The name is lowercased so writes
-// are case-insensitive. Passing "dur" or "desc" routes to Duration or
-// Description; a "dur" value that does not parse as a float is stored
-// under Extra["dur"] instead and Duration is cleared.
+// WithParam sets an arbitrary param. The name is lowercased so
+// writes are case-insensitive. Passing "dur" or "desc" routes to
+// Duration or Description; a "dur" value that does not parse as a
+// float is stored under Extra["dur"] instead and Duration is
+// cleared. WithParam panics if name is not a valid HTTP token.
 func (m *Metric) WithParam(name, value string) *Metric {
+	if !isToken(name) {
+		panic("servertiming: param name must be a valid HTTP token: " + name)
+	}
 	switch strings.ToLower(name) {
 	case "dur":
 		if ms, err := strconv.ParseFloat(value, 64); err == nil {
@@ -114,6 +133,14 @@ func (m *Metric) String() string {
 	if len(m.Extra) > 0 {
 		keys := make([]string, 0, len(m.Extra))
 		for k := range m.Extra {
+			// Skip reserved keys when the typed field is already
+			// emitted to avoid double-writing dur/desc.
+			if k == "dur" && m.Duration != 0 {
+				continue
+			}
+			if k == "desc" && m.Description != "" {
+				continue
+			}
 			keys = append(keys, k)
 		}
 		slices.Sort(keys)
@@ -148,11 +175,18 @@ func writeValue(b *strings.Builder, value string) {
 }
 
 // writeQuoted emits DQUOTE *(qdtext / quoted-pair) DQUOTE, escaping
-// internal DQUOTE and backslash with a leading backslash.
+// internal DQUOTE and backslash with a leading backslash. Bytes that
+// are not valid qdtext (control characters below 0x20 other than
+// HTAB, and DEL 0x7F) are replaced with SP to keep the emitted
+// value spec-compliant; obs-text (0x80-0xFF) is passed through as
+// RFC 7230 permits.
 func writeQuoted(b *strings.Builder, value string) {
 	b.WriteByte('"')
 	for i := 0; i < len(value); i++ {
 		c := value[i]
+		if (c < 0x20 && c != '\t') || c == 0x7F {
+			c = ' '
+		}
 		if c == '"' || c == '\\' {
 			b.WriteByte('\\')
 		}

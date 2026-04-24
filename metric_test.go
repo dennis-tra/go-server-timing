@@ -1,6 +1,7 @@
 package servertiming
 
 import (
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -65,6 +66,76 @@ func TestMetric_WithParamOverwrites(t *testing.T) {
 	m := NewMetric("db").WithParam("foo", "a").WithParam("foo", "b")
 	if got := m.Extra["foo"]; got != "b" {
 		t.Errorf("Extra[foo] = %q, want %q (last-wins)", got, "b")
+	}
+}
+
+func TestNewMetric_PanicsOnInvalidName(t *testing.T) {
+	tests := []string{"", "a b", "a,b", `a"b`, "a;b"}
+	for _, name := range tests {
+		t.Run(name, func(t *testing.T) {
+			defer func() {
+				if r := recover(); r == nil {
+					t.Errorf("NewMetric(%q) did not panic", name)
+				}
+			}()
+			NewMetric(name)
+		})
+	}
+}
+
+func TestWithParam_PanicsOnInvalidKey(t *testing.T) {
+	m := NewMetric("db")
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("WithParam with space in key did not panic")
+		}
+	}()
+	m.WithParam("bad key", "x")
+}
+
+func TestMetric_WriteQuotedReplacesControlBytes(t *testing.T) {
+	// Control chars disallowed in qdtext must not appear raw in output.
+	m := NewMetric("db").WithDesc("a\nb\tc\x00d")
+	got := m.String()
+	if containsAnyControl(got[len("db;desc="):]) {
+		t.Errorf("String() contains raw control chars: %q", got)
+	}
+	if !strings.Contains(got, "a b\tc d") && !strings.Contains(got, `a b\tc d`) {
+		// \t is the only preserved control byte (HTAB).
+		t.Logf("got %q (HTAB preserved, \\n and \\x00 replaced with SP)", got)
+	}
+}
+
+func containsAnyControl(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 0x20 && c != '\t') || c == 0x7F {
+			return true
+		}
+	}
+	return false
+}
+
+func TestMetric_ExtraDurSkippedWhenDurationSet(t *testing.T) {
+	// Manually set both Duration and Extra["dur"] to simulate the
+	// invariant being violated by direct field access. String must
+	// not emit dur twice.
+	m := NewMetric("db")
+	m.Duration = 50 * time.Millisecond
+	m.Extra = map[string]string{"dur": "stale"}
+	got := m.String()
+	if strings.Count(got, ";dur=") != 1 {
+		t.Errorf("String = %q, want exactly one dur param", got)
+	}
+}
+
+func TestMetric_ExtraDescSkippedWhenDescriptionSet(t *testing.T) {
+	m := NewMetric("db")
+	m.Description = "primary"
+	m.Extra = map[string]string{"desc": "stale"}
+	got := m.String()
+	if strings.Count(got, ";desc=") != 1 {
+		t.Errorf("String = %q, want exactly one desc param", got)
 	}
 }
 

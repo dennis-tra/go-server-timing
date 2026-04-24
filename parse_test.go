@@ -269,6 +269,10 @@ func FuzzParseHeader(f *testing.F) {
 		",,,",
 		`"unterminated`,
 		"bad name, good;dur=5",
+		"db;desc=\"obs\xe9text\"",  // obs-text byte
+		"db;desc=\"nul\x00byte\"",  // NUL in qdtext
+		"db;desc=\"line\nfeed\"",   // LF in qdtext
+		"db;desc=\"\xff\xfe\xfd\"", // high bytes run
 	}
 	for _, s := range seeds {
 		f.Add(s)
